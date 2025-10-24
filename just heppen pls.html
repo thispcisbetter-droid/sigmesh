@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Auto-Send BLE Clock</title>
+    <!-- Load Tailwind CSS for simple, responsive styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; }
+        .card { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1); }
+        .btn { transition: background-color 0.3s, transform 0.1s; }
+        .btn:active { transform: scale(0.98); }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div id="app" class="w-full max-w-md bg-white p-6 rounded-xl card space-y-6">
+        <h1 class="text-2xl font-bold text-gray-800 text-center">Auto-Send BLE Clock Controller</h1>
+        <p class="text-sm text-gray-500 text-center font-bold text-red-600">
+            !!! THIS APP MUST BE HOSTED ON A SECURE HTTPS LINK TO WORK !!!
+        </p>
+        
+        <!-- Connection Status & Button -->
+        <div class="space-y-4">
+            <button id="connectButton" onclick="connect()" 
+                    class="btn w-full px-4 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50">
+                Connect to ESP32
+            </button>
+            <div id="status" class="p-3 text-center rounded-lg text-sm bg-blue-100 text-blue-800">
+                Status: Disconnected. Click 'Connect'.
+            </div>
+            <div id="autoSendStatus" class="p-3 text-center rounded-lg text-sm bg-gray-200 text-gray-700">
+                Auto-Send: Inactive
+            </div>
+        </div>
+
+        <!-- Dynamic Data Input -->
+        <div class="space-y-4 pt-4 border-t border-gray-200">
+            <h2 class="text-xl font-semibold text-gray-700">Weather Settings (Automatic)</h2>
+
+            <div>
+                <label for="inputCity" class="block text-sm font-medium text-gray-700 mb-1">City Name for Weather Fetch</label>
+                <input type="text" id="inputCity" value="New York" placeholder="e.g., London, Tokyo"
+                       class="block w-full rounded-md border-gray-300 p-3 border focus:border-indigo-500 focus:ring-indigo-500">
+            </div>
+
+            <div id="weatherDisplay" class="p-3 text-sm rounded-lg bg-yellow-50 text-yellow-800">
+                Weather Data: Not yet fetched.
+            </div>
+            
+            <p class="text-xs text-gray-500 pt-2">
+                *Time and data are sent every **5 seconds**. Weather data is fetched from the API only **once every 2 minutes** to save calls.
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const WEATHERAPI_API_KEY = '2982352a9e804e30b3a162618252410'; // YOUR API KEY IS NOW INSERTED
+        const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+        const CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+        const DEVICE_NAME = 'ESP32-OLED-Clock';
+        const SEND_INTERVAL_MS = 5000; // BLE data send interval (5 seconds)
+        const WEATHER_FETCH_INTERVAL_MS = 120000; // Weather API fetch interval (120 seconds / 2 minutes)
+
+        // --- GLOBAL STATE ---
+        let bleDevice;
+        let dataCharacteristic;
+        let isConnected = false;
+        let sendTimer = null;
+        let currentTemp = 0.0;
+        let currentWeather = "Unknown";
+        let lastWeatherFetchTime = 0; // Timestamp of the last successful weather fetch
+        
+        // --- UI ELEMENTS ---
+        const statusElement = document.getElementById('status');
+        const connectButton = document.getElementById('connectButton');
+        const autoSendStatusElement = document.getElementById('autoSendStatus');
+        const inputCity = document.getElementById('inputCity');
+        const weatherDisplay = document.getElementById('weatherDisplay');
+
+        /**
+         * Utility function to update the status message on the UI.
+         */
+        function updateStatus(message, isError = false) {
+            statusElement.textContent = `Status: ${message}`;
+            statusElement.className = `p-3 text-center rounded-lg text-sm ${isError ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`;
+        }
+
+        /**
+         * Converts a Date object to "HH:MM" format.
+         */
+        function getCurrentTimeFormatted() {
+            const now = new Date();
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            return `${hours}:${minutes}`;
+        }
+
+        /**
+         * Fetches weather data from WeatherAPI.com.
+         */
+        async function fetchWeatherData() {
+            // No longer checking for placeholder since the key is provided
+            
+            const city = inputCity.value.trim();
+            if (!city) {
+                weatherDisplay.textContent = 'Error: Please enter a city name.';
+                return;
+            }
+            
+            const url = `https://api.weatherapi.com/v1/current.json?key=${WEATHERAPI_API_KEY}&q=${city}&aqi=no`;
+
+            try {
+                // Implementing exponential backoff for the fetch call
+                const maxRetries = 3;
+                let response;
+                for (let i = 0; i < maxRetries; i++) {
+                    try {
+                        response = await fetch(url);
+                        if (response.ok) break;
+                    } catch (e) {
+                        if (i === maxRetries - 1) throw e;
+                        await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+                    }
+                }
+
+                const data = await response.json();
+
+                if (data.current && data.location) {
+                    // Extract temperature in Celsius and round to 1 decimal place
+                    currentTemp = parseFloat(data.current.temp_c).toFixed(1);
+                    
+                    // Extract the text description of the weather condition
+                    let conditionText = data.current.condition.text; 
+                    
+                    // Simple mapping/truncation for OLED display compatibility (max ~15 chars)
+                    if (conditionText.includes('Partly cloudy')) {
+                        currentWeather = 'P. Cloudy';
+                    } else if (conditionText.includes('Overcast')) {
+                        currentWeather = 'Overcast';
+                    } else if (conditionText.includes('Sunny') || conditionText.includes('Clear')) {
+                        currentWeather = 'Sunny/Clear';
+                    } else if (conditionText.includes('Rain') || conditionText.includes('Drizzle')) {
+                        currentWeather = 'Rain';
+                    } else if (conditionText.includes('Mist') || conditionText.includes('Fog')) {
+                        currentWeather = 'Foggy';
+                    } else if (conditionText.includes('Snow')) {
+                        currentWeather = 'Snow';
+                    } else {
+                        // Truncate to a reasonable length if the description is long
+                        currentWeather = conditionText.substring(0, 15);
+                    }
+
+                    weatherDisplay.textContent = `Weather Data: ${currentWeather}, ${currentTemp}°C in ${data.location.name}`;
+                    lastWeatherFetchTime = Date.now(); // Record success time
+
+                } else {
+                    // Handle API errors (e.g., invalid key, city not found)
+                    throw new Error(data.error?.message || "City not found or API error.");
+                }
+            } catch (error) {
+                console.error("Weather Fetch Error:", error);
+                weatherDisplay.textContent = `Weather Error: ${error.message}`;
+            }
+        }
+
+
+        /**
+         * Formats and sends the data to the ESP32 characteristic.
+         */
+        async function sendData() {
+            if (!isConnected || !dataCharacteristic) {
+                if(sendTimer) stopAutoSend(); 
+                updateStatus('Not connected. Auto-send stopped.', true);
+                return;
+            }
+
+            // 1. Check if it's time to fetch new weather data (Once every 2 minutes)
+            const currentTime = Date.now();
+            if (currentTime - lastWeatherFetchTime >= WEATHER_FETCH_INTERVAL_MS || lastWeatherFetchTime === 0) {
+                 await fetchWeatherData(); 
+            } else {
+                console.log('Skipping weather fetch, using cached data.');
+            }
+            // Note: The data sent to the ESP32 (currentTemp, currentWeather) is either newly fetched or cached.
+
+            // 2. Get live time from phone/system
+            const time = getCurrentTimeFormatted(); 
+
+            // Construct the required string: "HH:MM,TT.TC,WeatherCondition"
+            const dataString = `${time},${currentTemp}C,${currentWeather}`;
+
+            // Convert string to an ArrayBuffer using UTF-8
+            const encoder = new TextEncoder();
+            const dataToSend = encoder.encode(dataString);
+            
+            try {
+                // Write the value to the characteristic
+                await dataCharacteristic.writeValue(dataToSend);
+                autoSendStatusElement.textContent = `Auto-Send: Running | Sent: ${time} (${currentWeather})`;
+                console.log(`Data Sent: ${dataString}`);
+            } catch (error) {
+                updateStatus(`Send Error: ${error.message}. Stopping auto-send.`, true);
+                console.error("BLE Write Error:", error);
+                stopAutoSend();
+            }
+        }
+
+        /**
+         * Starts the periodic data sending timer.
+         */
+        function startAutoSend() {
+            if (sendTimer) clearInterval(sendTimer);
+            // We run sendData which handles both the 5-second BLE send and the 120-second weather fetch check
+            sendTimer = setInterval(sendData, SEND_INTERVAL_MS); 
+            autoSendStatusElement.textContent = `Auto-Send: Starting (Sending BLE data every ${SEND_INTERVAL_MS / 1000}s)`;
+            // Run once immediately to get initial data and start sending
+            sendData(); 
+        }
+
+        /**
+         * Stops the periodic data sending timer.
+         */
+        function stopAutoSend() {
+            if (sendTimer) {
+                clearInterval(sendTimer);
+                sendTimer = null;
+            }
+            autoSendStatusElement.textContent = 'Auto-Send: Inactive';
+        }
+
+
+        /**
+         * Connects to the ESP32 via Web Bluetooth.
+         */
+        async function connect() {
+            if (!navigator.bluetooth) {
+                 updateStatus('Browser does not support Web Bluetooth.', true);
+                 return;
+            }
+
+            if (isConnected) {
+                // Disconnect logic
+                stopAutoSend();
+                if (bleDevice && bleDevice.gatt.connected) {
+                    bleDevice.gatt.disconnect();
+                } else {
+                     updateStatus('Disconnected unexpectedly. Click Connect to restart.');
+                     onDisconnected();
+                }
+                return;
+            }
+
+            updateStatus('Scanning for device...');
+            connectButton.disabled = true;
+
+            try {
+                // 1. Request the device
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: DEVICE_NAME }],
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                updateStatus(`Connecting to ${bleDevice.name}...`);
+                bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+                // 2. Connect to the GATT server
+                const server = await bleDevice.gatt.connect();
+
+                // 3. Get the Service and Characteristic
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                dataCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+                isConnected = true;
+                connectButton.textContent = 'Connected (Click to Disconnect)';
+                connectButton.className = connectButton.className.replace('bg-indigo-600 hover:bg-indigo-700', 'bg-red-600 hover:bg-red-700');
+                updateStatus(`Successfully connected to ${bleDevice.name}.`);
+                
+                // --- Start Auto-Send on Successful Connection ---
+                startAutoSend();
+
+            } catch (error) {
+                updateStatus(`Connection Error: ${error.message}. Check your hosting environment!`, true);
+                console.error("Connection failed:", error);
+                onDisconnected();
+            } finally {
+                connectButton.disabled = false;
+            }
+        }
+
+        /**
+         * Handler for when the device disconnects (expected or unexpected).
+         */
+        function onDisconnected(event) {
+            console.log('Device disconnected.');
+            stopAutoSend();
+            isConnected = false;
+            connectButton.textContent = 'Connect to ESP32';
+            connectButton.className = connectButton.className.replace('bg-red-600 hover:bg-red-700', 'bg-indigo-600 hover:bg-indigo-700');
+            updateStatus('Disconnected. Auto-send stopped.', true);
+        }
+
+    </script>
+</body>
+</html>
