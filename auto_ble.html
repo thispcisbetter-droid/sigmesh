@@ -35,58 +35,50 @@
             </div>
         </div>
 
-        <!-- Static Data Input -->
+        <!-- Dynamic Data Input -->
         <div class="space-y-4 pt-4 border-t border-gray-200">
-            <h2 class="text-xl font-semibold text-gray-700">Static Data Settings</h2>
+            <h2 class="text-xl font-semibold text-gray-700">Weather Settings (Automatic)</h2>
 
-            <!-- Temperature Input (Static, since we can't get live weather in JS easily) -->
             <div>
-                <label for="inputTemp" class="block text-sm font-medium text-gray-700 mb-1">Temperature (°C) - Static</label>
-                <div class="relative mt-1 rounded-md shadow-sm">
-                    <input type="number" id="inputTemp" value="23.0" step="0.1" 
-                           class="block w-full pr-12 rounded-md border-gray-300 p-3 border focus:border-indigo-500 focus:ring-indigo-500">
-                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
-                        <span class="text-gray-500 sm:text-sm">°C</span>
-                    </div>
-                </div>
+                <label for="inputCity" class="block text-sm font-medium text-gray-700 mb-1">City Name for Weather Fetch</label>
+                <input type="text" id="inputCity" value="New York" placeholder="e.g., London, Tokyo"
+                       class="block w-full rounded-md border-gray-300 p-3 border focus:border-indigo-500 focus:ring-indigo-500">
             </div>
 
-            <!-- Weather Input (Static) -->
-            <div>
-                <label for="inputWeather" class="block text-sm font-medium text-gray-700 mb-1">Weather Condition - Static</label>
-                <select id="inputWeather" 
-                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border bg-white focus:border-indigo-500 focus:ring-indigo-500">
-                    <option value="Sunny">Sunny</option>
-                    <option value="Cloudy" selected>Cloudy</option>
-                    <option value="Rain">Rain</option>
-                    <option value="Clear Night">Clear Night</option>
-                    <option value="Thunderstorm">Thunderstorm</option>
-                </select>
+            <div id="weatherDisplay" class="p-3 text-sm rounded-lg bg-yellow-50 text-yellow-800">
+                Weather Data: Not yet fetched.
             </div>
             
             <p class="text-xs text-gray-500 pt-2">
-                *Time is automatically fetched from your device's system clock.
+                *Time and data are sent every **5 seconds**. Weather data is fetched from the API only **once every 2 minutes** to save calls.
             </p>
         </div>
     </div>
 
     <script>
-        // --- BLE Configuration (MUST match ESP32 code) ---
+        // --- CONFIGURATION (UPDATE THESE) ---
+        const WEATHERAPI_API_KEY = 'YOUR_WEATHERAPI_API_KEY'; // <<< REPLACE THIS!
         const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
         const CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
         const DEVICE_NAME = 'ESP32-OLED-Clock';
-        const SEND_INTERVAL_MS = 5000; // Auto-send every 5 seconds
+        const SEND_INTERVAL_MS = 5000; // BLE data send interval (5 seconds)
+        const WEATHER_FETCH_INTERVAL_MS = 120000; // Weather API fetch interval (120 seconds / 2 minutes)
 
+        // --- GLOBAL STATE ---
         let bleDevice;
         let dataCharacteristic;
         let isConnected = false;
-        let sendTimer = null; // Variable to hold the interval timer
-
+        let sendTimer = null;
+        let currentTemp = 0.0;
+        let currentWeather = "Unknown";
+        let lastWeatherFetchTime = 0; // Timestamp of the last successful weather fetch
+        
+        // --- UI ELEMENTS ---
         const statusElement = document.getElementById('status');
         const connectButton = document.getElementById('connectButton');
         const autoSendStatusElement = document.getElementById('autoSendStatus');
-        const inputTemp = document.getElementById('inputTemp');
-        const inputWeather = document.getElementById('inputWeather');
+        const inputCity = document.getElementById('inputCity');
+        const weatherDisplay = document.getElementById('weatherDisplay');
 
         /**
          * Utility function to update the status message on the UI.
@@ -107,24 +99,93 @@
         }
 
         /**
+         * Fetches weather data from WeatherAPI.com.
+         */
+        async function fetchWeatherData() {
+            // Note: I changed the key check to specifically check the placeholder string, 
+            // as the user may paste a blank key, which is still invalid.
+            if (WEATHERAPI_API_KEY === 'YOUR_WEATHERAPI_API_KEY') {
+                weatherDisplay.textContent = 'Error: Please set your WeatherAPI.com API Key in the script.';
+                return;
+            }
+
+            const city = inputCity.value.trim();
+            if (!city) {
+                weatherDisplay.textContent = 'Error: Please enter a city name.';
+                return;
+            }
+            
+            const url = `https://api.weatherapi.com/v1/current.json?key=$ {2982352a9e804e30b3a162618252410} &q=${hyderabad}&aqi=no`;
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.current && data.location) {
+                    // Extract temperature in Celsius and round to 1 decimal place
+                    currentTemp = parseFloat(data.current.temp_c).toFixed(1);
+                    
+                    // Extract the text description of the weather condition
+                    let conditionText = data.current.condition.text; 
+                    
+                    // Simple mapping/truncation for OLED display compatibility (max ~15 chars)
+                    if (conditionText.includes('Partly cloudy')) {
+                        currentWeather = 'P. Cloudy';
+                    } else if (conditionText.includes('Overcast')) {
+                        currentWeather = 'Overcast';
+                    } else if (conditionText.includes('Sunny') || conditionText.includes('Clear')) {
+                        currentWeather = 'Sunny/Clear';
+                    } else if (conditionText.includes('Rain') || conditionText.includes('Drizzle')) {
+                        currentWeather = 'Rain';
+                    } else if (conditionText.includes('Mist') || conditionText.includes('Fog')) {
+                        currentWeather = 'Foggy';
+                    } else if (conditionText.includes('Snow')) {
+                        currentWeather = 'Snow';
+                    } else {
+                        // Truncate to a reasonable length if the description is long
+                        currentWeather = conditionText.substring(0, 15);
+                    }
+
+                    weatherDisplay.textContent = `Weather Data: ${currentWeather}, ${currentTemp}°C in ${data.location.name}`;
+                    lastWeatherFetchTime = Date.now(); // Record success time
+
+                } else {
+                    // Handle API errors (e.g., invalid key, city not found)
+                    throw new Error(data.error?.message || "City not found or API error.");
+                }
+            } catch (error) {
+                console.error("Weather Fetch Error:", error);
+                weatherDisplay.textContent = `Weather Error: ${error.message}`;
+                // Do not reset currentTemp/currentWeather to 0/Error on temporary fetch failure
+                // We keep the last known good value to maintain a display on the OLED.
+            }
+        }
+
+
+        /**
          * Formats and sends the data to the ESP32 characteristic.
          */
         async function sendData() {
             if (!isConnected || !dataCharacteristic) {
-                // If the timer is still running but we lost connection, stop the timer.
                 if(sendTimer) stopAutoSend(); 
                 updateStatus('Not connected. Auto-send stopped.', true);
                 return;
             }
 
-            // 1. Get live time from phone/system
+            // 1. Check if it's time to fetch new weather data (Once every 2 minutes)
+            const currentTime = Date.now();
+            if (currentTime - lastWeatherFetchTime >= WEATHER_FETCH_INTERVAL_MS || lastWeatherFetchTime === 0) {
+                 await fetchWeatherData(); 
+            } else {
+                console.log('Skipping weather fetch, using cached data.');
+            }
+            // Note: The data sent to the ESP32 (currentTemp, currentWeather) is either newly fetched or cached.
+
+            // 2. Get live time from phone/system
             const time = getCurrentTimeFormatted(); 
-            // 2. Get static data from input fields
-            const temp = parseFloat(inputTemp.value).toFixed(1);
-            const weather = inputWeather.value; 
 
             // Construct the required string: "HH:MM,TT.TC,WeatherCondition"
-            const dataString = `${time},${temp}C,${weather}`;
+            const dataString = `${time},${currentTemp}C,${currentWeather}`;
 
             // Convert string to an ArrayBuffer using UTF-8
             const encoder = new TextEncoder();
@@ -133,12 +194,12 @@
             try {
                 // Write the value to the characteristic
                 await dataCharacteristic.writeValue(dataToSend);
-                autoSendStatusElement.textContent = `Auto-Send: Running | Sent: ${time}`;
+                autoSendStatusElement.textContent = `Auto-Send: Running | Sent: ${time} (${currentWeather})`;
                 console.log(`Data Sent: ${dataString}`);
             } catch (error) {
                 updateStatus(`Send Error: ${error.message}. Stopping auto-send.`, true);
                 console.error("BLE Write Error:", error);
-                stopAutoSend(); // Stop if there's a transmission error
+                stopAutoSend();
             }
         }
 
@@ -146,10 +207,11 @@
          * Starts the periodic data sending timer.
          */
         function startAutoSend() {
-            if (sendTimer) clearInterval(sendTimer); // Clear any existing timer
-            sendTimer = setInterval(sendData, SEND_INTERVAL_MS);
-            autoSendStatusElement.textContent = `Auto-Send: Starting (Every ${SEND_INTERVAL_MS / 1000}s)`;
-            // Run once immediately
+            if (sendTimer) clearInterval(sendTimer);
+            // We run sendData which handles both the 5-second BLE send and the 120-second weather fetch check
+            sendTimer = setInterval(sendData, SEND_INTERVAL_MS); 
+            autoSendStatusElement.textContent = `Auto-Send: Starting (Sending BLE data every ${SEND_INTERVAL_MS / 1000}s)`;
+            // Run once immediately to get initial data and start sending
             sendData(); 
         }
 
@@ -215,7 +277,6 @@
                 startAutoSend();
 
             } catch (error) {
-                // This is where the SecurityError comes from.
                 updateStatus(`Connection Error: ${error.message}. Check your hosting environment!`, true);
                 console.error("Connection failed:", error);
                 onDisconnected();
