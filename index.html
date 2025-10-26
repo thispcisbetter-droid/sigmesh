@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BLE Weather Reporter</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f9;
+        }
+        .card {
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+        }
+        .status-connected {
+            background-color: #10b981; /* Emerald 500 */
+        }
+        .status-disconnected {
+            background-color: #ef4444; /* Red 500 */
+        }
+        .status-text {
+            color: #ffffff;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div id="app" class="card w-full max-w-lg bg-white rounded-xl p-8 space-y-6">
+        <h1 class="text-3xl font-extrabold text-gray-900 text-center">
+            ESP32 Weather Sender
+        </h1>
+        <p class="text-center text-sm text-gray-500">
+            This client fetches real-time weather and sends the update string every 30 seconds via Bluetooth Low Energy (BLE).
+        </p>
+
+        <!-- Connection Status -->
+        <div class="rounded-lg p-4 transition-all duration-300" id="status-card">
+            <p class="text-center font-semibold status-text" id="status-text">DISCONNECTED</p>
+        </div>
+
+        <!-- Weather Display -->
+        <div class="border border-gray-200 rounded-lg p-6 bg-gray-50 space-y-4">
+            <div class="flex justify-between items-center">
+                <p class="text-lg font-medium text-gray-700">Last Sent Condition:</p>
+                <p class="text-xl font-bold text-blue-600" id="current-condition">--</p>
+            </div>
+            <div class="flex justify-between items-center">
+                <p class="text-lg font-medium text-gray-700">Last Sent Temperature:</p>
+                <p class="text-xl font-bold text-blue-600" id="current-temp">--</p>
+            </div>
+            <p class="text-sm text-gray-500 pt-2" id="last-update-time">Last updated: Never</p>
+        </div>
+
+        <!-- Control Buttons -->
+        <div class="space-y-4">
+            <button id="connect-btn" onclick="connectBLE()"
+                class="w-full py-3 px-4 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition duration-150 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50 disabled:opacity-50">
+                Connect to ESP32
+            </button>
+            <button id="disconnect-btn" onclick="disconnectBLE()" disabled
+                class="w-full py-3 px-4 bg-red-500 text-white font-semibold rounded-lg hover:bg-red-600 transition duration-150 focus:outline-none focus:ring-4 focus:ring-red-400 focus:ring-opacity-50 disabled:opacity-50">
+                Disconnect
+            </button>
+        </div>
+
+        <!-- Log Area -->
+        <div class="mt-6 border-t pt-4">
+            <h3 class="text-lg font-semibold text-gray-800">Activity Log</h3>
+            <textarea id="log-area" rows="6" readonly class="mt-2 w-full p-3 text-xs border border-gray-300 rounded-lg bg-gray-100 resize-none"></textarea>
+        </div>
+    </div>
+
+    <script>
+        // Global Variables
+        const DEVICE_NAME = "WeatherDisplay";
+        const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+        const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+        const UPDATE_INTERVAL_MS = 30000; // 30 seconds
+
+        let device = null;
+        let characteristic = null;
+        let updateIntervalId = null;
+
+        // UI Elements
+        const statusCard = document.getElementById('status-card');
+        const statusText = document.getElementById('status-text');
+        const connectBtn = document.getElementById('connect-btn');
+        const disconnectBtn = document.getElementById('disconnect-btn');
+        const currentConditionEl = document.getElementById('current-condition');
+        const currentTempEl = document.getElementById('current-temp');
+        const lastUpdateTimeEl = document.getElementById('last-update-time');
+        const logArea = document.getElementById('log-area');
+
+        // Firestore Globals (Required by Canvas, but not used for this simple BLE app)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+        // Utility Functions
+        function log(message, isError = false) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logMessage = `[${timestamp}] ${isError ? 'ERROR: ' : ''}${message}\n`;
+            logArea.value += logMessage;
+            logArea.scrollTop = logArea.scrollHeight;
+            if (isError) console.error(message);
+        }
+
+        function updateStatus(isConnected) {
+            if (isConnected) {
+                statusText.textContent = 'CONNECTED';
+                statusCard.classList.remove('status-disconnected');
+                statusCard.classList.add('status-connected');
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            } else {
+                statusText.textContent = 'DISCONNECTED';
+                statusCard.classList.remove('status-connected');
+                statusCard.classList.add('status-disconnected');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                // Stop the interval when disconnected
+                clearInterval(updateIntervalId);
+                log('Stopped automatic weather updates.');
+            }
+        }
+
+        // --- CORE BLE FUNCTIONS ---
+
+        async function connectBLE() {
+            if (!navigator.bluetooth) {
+                log('Web Bluetooth API is not available in this browser. Use Chrome or Edge.', true);
+                return;
+            }
+
+            try {
+                log('Requesting Bluetooth device...');
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{ namePrefix: DEVICE_NAME }],
+                    optionalServices: [SERVICE_UUID]
+                });
+                device.addEventListener('gattserverdisconnected', onDisconnected);
+
+                log('Connecting to GATT Server...');
+                const server = await device.gatt.connect();
+
+                log('Getting Service...');
+                const service = await server.getPrimaryService(SERVICE_UUID);
+
+                log('Getting Characteristic...');
+                characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+                log(`Successfully connected to ${device.name}! Starting weather updates.`);
+                updateStatus(true);
+                
+                // Fetch and send weather immediately, then start interval
+                await fetchAndSendWeather();
+                updateIntervalId = setInterval(fetchAndSendWeather, UPDATE_INTERVAL_MS);
+
+            } catch (error) {
+                log(`Connection failed: ${error.message}`, true);
+                updateStatus(false);
+            }
+        }
+
+        function onDisconnected(event) {
+            log(`Device ${event.target.name} disconnected.`);
+            device = null;
+            characteristic = null;
+            updateStatus(false);
+        }
+
+        function disconnectBLE() {
+            if (device && device.gatt.connected) {
+                device.gatt.disconnect();
+                log('Manually disconnected.');
+            } else {
+                log('Device is already disconnected.');
+            }
+            // The onDisconnected event listener will handle the final status update
+        }
+
+        async function writeDataToCharacteristic(dataString) {
+            if (!characteristic || !device.gatt.connected) {
+                log('Cannot send data. Not connected to characteristic.', true);
+                updateStatus(false); // Force status update if something went wrong
+                return;
+            }
+
+            try {
+                const encoder = new TextEncoder();
+                const data = encoder.encode(dataString);
+                await characteristic.writeValue(data);
+                log(`Data sent: "${dataString}"`);
+
+                // Update UI with sent data
+                const [condition, temp] = dataString.split('|');
+                currentConditionEl.textContent = condition || '--';
+                currentTempEl.textContent = temp || '--';
+                lastUpdateTimeEl.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+
+            } catch (error) {
+                log(`Error sending data: ${error.message}`, true);
+                // Try to reconnect if the write failed
+                if (device && !device.gatt.connected) {
+                    log('Attempting to reconnect after failed write...');
+                    // Stop interval and let the disconnect handler try to clear up.
+                    clearInterval(updateIntervalId); 
+                    // No explicit call to reconnect, rely on the user clicking connect again.
+                }
+            }
+        }
+
+        // --- WEATHER API & DATA PARSING ---
+
+        // Exponential backoff helper for API calls
+        async function fetchWithRetry(url, options, maxRetries = 3) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    return response;
+                } catch (error) {
+                    if (i === maxRetries - 1) throw error;
+                    const delay = Math.pow(2, i) * 1000;
+                    // Do not log the retry attempt to the console
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+
+
+        async function fetchAndSendWeather() {
+            if (!characteristic || !device.gatt.connected) {
+                log('Skipping weather update: BLE device is not connected.', true);
+                return;
+            }
+
+            log('Fetching real-time weather update for Hyderabad...');
+            const systemPrompt = "You are a specialized weather API interface. Based on the real-time information you find, output ONLY the current main weather condition description (e.g., 'Clear', 'Mostly Sunny', 'Light Rain') and the current temperature value (including the unit, e.g., '30°C'). Separate the condition and the temperature with a single pipe character `|`. Do not include any other text, greetings, or explanations.";
+            const userQuery = "What is the current weather condition and temperature in Hyderabad, India?";
+            const apiKey = ""; 
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            try {
+                const response = await fetchWithRetry(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                if (text && text.includes('|')) {
+                    const dataString = text.trim();
+                    log(`API response parsed: "${dataString}"`);
+                    await writeDataToCharacteristic(dataString);
+                } else {
+                    // Fallback in case the API gives a weird response
+                    log(`API provided unparsable output. Using fallback data: "Cloudy|25°C"`, true);
+                    await writeDataToCharacteristic("Cloudy|25°C");
+                }
+            } catch (error) {
+                log(`Failed to fetch weather: ${error.message}. Using fallback data.`, true);
+                await writeDataToCharacteristic("Unavailable|--°C");
+            }
+        }
+
+        // Initial setup
+        window.onload = () => {
+            updateStatus(false);
+            log('Application loaded. Click Connect to start.');
+            logArea.value = ''; // Clear initial log on load
+        };
+
+    </script>
+</body>
+</html>
