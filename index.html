@@ -20,7 +20,7 @@
             box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.08);
             transition: all 0.5s ease;
         }
-        /* Style for disabled BLE button */
+        /* Style for disabled button */
         .btn-disabled {
             opacity: 0.6;
             cursor: not-allowed;
@@ -72,15 +72,11 @@
 
             <!-- BLE Output Section -->
             <div class="mt-8 pt-4 border-t border-white border-opacity-20">
-                <h3 class="text-sm font-semibold opacity-80 mb-2">ESP32 BLE Data String</h3>
+                <h3 class="text-sm font-semibold opacity-80 mb-2">ESP32 Data String (Auto-Sending)</h3>
                 <code id="bleOutput" class="block w-full text-xs text-left bg-white bg-opacity-10 p-2 rounded-lg break-all">
                     Loading...
                 </code>
-                <!-- New button for sending data -->
-                <button id="sendBleDataButton" class="mt-2 w-full bg-green-600 text-white font-bold py-2 rounded-xl hover:bg-green-700 transition duration-150 shadow-md btn-disabled" disabled>
-                    Send Data via Bluetooth
-                </button>
-                <p id="sendDataStatus" class="text-xs text-center mt-1 opacity-75 hidden">Data Sent!</p>
+                <!-- Removed: Manual Send Button -->
             </div>
             
             <!-- Fetch Button and Status -->
@@ -91,10 +87,11 @@
 
             <!-- BLE Connection Section -->
             <div class="mt-4 pt-4 border-t border-white border-opacity-20">
-                <button id="bleConnectButton" class="w-full bg-green-500 text-white font-bold py-2 rounded-xl hover:bg-green-600 transition duration-150 shadow-md">
+                <button id="bleConnectButton" class="w-full bg-orange-500 text-white font-bold py-2 rounded-xl hover:bg-orange-600 transition duration-150 shadow-md">
                     Connect via Bluetooth
                 </button>
-                <p id="bluetoothStatus" class="text-xs text-center mt-1 text-yellow-300">Status: Disconnected</p>
+                <p id="connectionStatus" class="text-xs text-center mt-1 text-yellow-300">Status: Disconnected</p>
+                <p id="bleHint" class="text-xs text-center mt-1 opacity-75">Make sure your ESP32 is powered on and advertising.</p>
             </div>
 
         </div>
@@ -111,21 +108,25 @@
         const API_KEY = "f433f239860742c1b8e134145252510";
         const CITY = "Hyderabad";
         const API_URL = `https://api.weatherapi.com/v1/current.json?key=${API_KEY}&q=${CITY}`;
-        const WEATHER_REFRESH_INTERVAL = 120000; // 2 minutes in ms
-        const TIME_REFRESH_INTERVAL = 5000; // 5 seconds in ms
+        const WEATHER_REFRESH_INTERVAL = 120000; // 2 minutes (120000ms)
+        const TIME_REFRESH_INTERVAL = 5000; // 5 seconds (5000ms)
         const MAX_ATTEMPTS = 3;
         
-        // --- BLE Configuration (UPDATED WITH YOUR CORRECT UUIDs) ---
-        // Service UUID: 9a1b2c3d-4e5f-6a70-8b9c-0d1e2f3a4b5c
-        const SERVICE_UUID = '9a1b2c3d-4e5f-6a70-8b9c-0d1e2f3a4b5c'; 
-        // Characteristic UUID: 1a2b3c4d-5e6f-7a80-9b0c-1d2e3f4a5b6c
-        const CHARACTERISTIC_UUID = '1a2b3c4d-5e6f-7a80-9b0c-1d2e3f4a5b6c'; 
+        // --- BLE Configuration ---
+        // These MUST exactly match the UUIDs in your ESP32 firmware
+        const BLE_SERVICE_UUID = '9a1b2c3d-4e5f-6a70-8b9c-0d1e2f3a4b5c';
+        const BLE_CHARACTERISTIC_UUID = '1a2b3c4d-5e6f-7a80-9b0c-1d2e3f4a5b6c';
+        const encoder = new TextEncoder();
+        
+        // --- Global BLE State ---
+        let bleDevice = null;
+        let bleServer = null;
+        let bleService = null;
+        let bleCharacteristic = null;
 
-        // --- Global State ---
+        // --- Global Weather State ---
         let lastWeatherData = null; 
         let fetchIntervalId = null; 
-        let bleCharacteristic = null; // Stored characteristic for sending data
-        let bleDevice = null; // Stored device reference
 
         // --- DOM Elements ---
         const weatherCard = document.getElementById('weatherCard');
@@ -139,13 +140,12 @@
         const windSpeed = document.getElementById('windSpeed');
         const humidity = document.getElementById('humidity');
         const lastUpdated = document.getElementById('lastUpdated');
-        const bleOutput = document.getElementById('bleOutput');
-        const sendBleDataButton = document.getElementById('sendBleDataButton'); // Renamed button
-        const sendDataStatus = document.getElementById('sendDataStatus'); // Status for data send
+        const bleOutput = document.getElementById('bleOutput'); 
+        // Removed: sendBleDataButton, sendDataStatus
         const manualFetchButton = document.getElementById('manualFetchButton');
         const fetchStatus = document.getElementById('fetchStatus');
-        const bleConnectButton = document.getElementById('bleConnectButton');
-        const bluetoothStatus = document.getElementById('bluetoothStatus');
+        const bleConnectButton = document.getElementById('bleConnectButton'); 
+        const connectionStatus = document.getElementById('connectionStatus'); 
 
 
         // --- Helper Functions ---
@@ -159,9 +159,9 @@
         }
 
         /**
-         * Formats the time specifically for the ESP32 BLE string (HH:MM 24-hour format).
+         * Formats the time specifically for the ESP32 data string (HH:MM 24-hour format).
          */
-        function formatTimeBle() {
+        function formatTimeData() {
             const date = new Date();
             const hours = String(date.getHours()).padStart(2, '0');
             const minutes = String(date.getMinutes()).padStart(2, '0');
@@ -169,10 +169,10 @@
         }
         
         /**
-         * Generates the string for the ESP32 BLE receiver.
+         * Generates the string for the ESP32 receiver.
          * Format: time=HH:MM;cond=Condition;temp=XXC
          */
-        function generateBleString(current) {
+        function generateDataString(current) {
             let condition = current.condition.text;
             
             // Apply the user's specific replacement: "mist" -> "Partly cloudy"
@@ -180,16 +180,46 @@
                 condition = 'Partly cloudy';
             }
 
-            const time = formatTimeBle(); // Use current browser time
+            const time = formatTimeData(); // Use current browser time
             const temp = Math.round(current.temp_c);
             
             return `time=${time};cond=${condition};temp=${temp}°C`;
         }
         
         /**
-         * Updates the UI elements that rely on the current time (runs every 5s).
+         * Attempts to send the given data string via BLE Characteristic Write.
+         * Note: This function is now called automatically by the timers.
+         * @param {string} data The data string to send.
          */
-        function updateTimeAndBleString() {
+        async function sendBleData(data) {
+            if (!bleCharacteristic) {
+                // If not connected, simply skip. Don't spam the console every 5 seconds.
+                return;
+            }
+
+            try {
+                // Use the data passed to the function
+                await bleCharacteristic.writeValue(encoder.encode(data));
+                
+                // Log success to the console for debugging
+                console.log(`BLE data sent automatically (${formatTimeUi(new Date())}):`, data);
+
+            } catch (error) {
+                // Handle disconnection on write error (e.g., ESP32 went out of range/powered off)
+                console.error("Error sending BLE data (connection likely lost):", error.name);
+                
+                if (bleDevice && bleDevice.gatt.connected) {
+                    // Try to cleanly disconnect
+                    bleDevice.gatt.disconnect();
+                }
+            }
+        }
+
+        /**
+         * Updates the UI elements that rely on the current time (runs every 5s) 
+         * and automatically sends the update via BLE.
+         */
+        function updateTimeAndDataString() {
             if (!lastWeatherData) return;
             
             const localTime = new Date(); 
@@ -198,9 +228,12 @@
             dateDisplay.textContent = localTime.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) + 
                                       ' | ' + formatTimeUi(localTime);
 
-            // 2. Regenerate BLE string using the last known weather condition/temp and the current time
-            const bleString = generateBleString(lastWeatherData.current);
-            bleOutput.textContent = bleString;
+            // 2. Regenerate data string using the last known weather condition/temp and the current time
+            const dataString = generateDataString(lastWeatherData.current);
+            bleOutput.textContent = dataString;
+            
+            // 3. AUTO-SEND: Push the new time and data string over BLE
+            sendBleData(dataString);
         }
 
         /**
@@ -236,7 +269,8 @@
             // Update Footer (last updated time from the API source)
             lastUpdated.textContent = `API data updated: ${formatTimeUi(new Date(current.last_updated.replace(' ', 'T')))}`;
             
-            updateTimeAndBleString(); 
+            // Update time string and attempt to send (Important: runs auto-send logic)
+            updateTimeAndDataString(); 
 
             // Show data and hide loader
             loadingState.classList.add('hidden');
@@ -251,10 +285,10 @@
             weatherCard.style.background = current.is_day === 0 ? nightBg : dayBg;
             document.body.style.backgroundColor = current.is_day === 0 ? bodyNightBg : bodyDayBg;
 
-            // Automatically send data after a successful manual fetch (optional feature)
-            // if (isManual && bleCharacteristic) {
-            //     sendBleData();
-            // }
+            // AUTO-SEND: Send the new data immediately after a weather update, 
+            // in case the 5-second interval hasn't fired yet.
+            const dataString = generateDataString(current);
+            sendBleData(dataString);
         }
 
         /**
@@ -324,139 +358,108 @@
             }
         }
         
-        // --- BLE Logic ---
+        // --- BLE Connection Logic ---
 
         /**
          * Sets the BLE connection UI state.
-         * @param {string} statusText The text to display.
-         * @param {string} colorClass Tailwind text color class (e.g., 'text-green-300').
-         * @param {boolean} isConnected If true, enables send button and changes connect button text/color.
          */
-        function updateBleStatus(statusText, colorClass, isConnected) {
-            bluetoothStatus.textContent = `Status: ${statusText}`;
-            bluetoothStatus.classList.remove('text-green-300', 'text-yellow-300', 'text-red-300');
-            bluetoothStatus.classList.add(colorClass);
+        function updateConnectionStatus(statusText, colorClass, isConnected) {
+            connectionStatus.textContent = `Status: ${statusText}`;
+            connectionStatus.classList.remove('text-green-300', 'text-yellow-300', 'text-red-300', 'text-orange-300');
+            connectionStatus.classList.add(colorClass);
 
             if (isConnected) {
-                sendBleDataButton.disabled = false;
-                sendBleDataButton.classList.remove('btn-disabled');
                 bleConnectButton.textContent = 'Disconnect';
-                bleConnectButton.classList.remove('bg-green-500', 'hover:bg-green-600');
+                bleConnectButton.classList.remove('bg-orange-500', 'hover:bg-orange-600');
                 bleConnectButton.classList.add('bg-red-500', 'hover:bg-red-600');
             } else {
-                sendBleDataButton.disabled = true;
-                sendBleDataButton.classList.add('btn-disabled');
                 bleConnectButton.textContent = 'Connect via Bluetooth';
                 bleConnectButton.classList.remove('bg-red-500', 'hover:bg-red-600');
-                bleConnectButton.classList.add('bg-green-500', 'hover:bg-green-600');
+                bleConnectButton.classList.add('bg-orange-500', 'hover:bg-orange-600');
             }
             bleConnectButton.disabled = false;
         }
 
         /**
-         * Handles the GATT server disconnection event.
+         * Handles the device disconnected event.
          */
         function onDisconnected(event) {
-            console.log(`Device ${event.target.name} disconnected.`);
-            bleCharacteristic = null;
-            bleDevice = null;
-            updateBleStatus("Disconnected", 'text-red-300', false);
+            console.log('Bluetooth Device Disconnected:', event.target.name);
+            updateConnectionStatus("Disconnected", 'text-red-300', false);
         }
 
         /**
-         * Attempts to send the current BLE data string to the connected characteristic.
-         */
-        async function sendBleData() {
-            if (!bleCharacteristic || !bleCharacteristic.service.device.gatt.connected) {
-                updateBleStatus("Error - Not Connected", 'text-red-300', false);
-                console.error("Cannot send data: Characteristic is unavailable or device disconnected.");
-                return;
-            }
-
-            const data = bleOutput.textContent;
-            
-            try {
-                // Encode the string data to a byte array
-                const encoder = new TextEncoder();
-                await bleCharacteristic.writeValue(encoder.encode(data));
-                
-                sendDataStatus.textContent = `Sent at ${formatTimeUi(new Date())}`;
-                sendDataStatus.classList.remove('hidden');
-                setTimeout(() => { sendDataStatus.classList.add('hidden'); }, 3000);
-                
-                console.log("BLE data successfully sent:", data);
-
-            } catch (error) {
-                sendDataStatus.textContent = `Failed to send! Error: ${error.message.substring(0, 30)}...`;
-                sendDataStatus.classList.remove('hidden');
-                sendDataStatus.classList.remove('opacity-75');
-                sendDataStatus.classList.add('text-red-300');
-                setTimeout(() => { 
-                    sendDataStatus.classList.add('hidden'); 
-                    sendDataStatus.classList.remove('text-red-300');
-                    sendDataStatus.classList.add('opacity-75');
-                }, 5000);
-                
-                console.error("Error writing BLE characteristic:", error);
-            }
-        }
-
-
-        /**
-         * Attempts to connect to an ESP32 device via Web Bluetooth.
+         * Establishes a BLE connection to the ESP32.
          */
         async function connectBle() {
-            if (bleDevice && bleDevice.gatt.connected) {
-                // Handle Disconnect action
-                bleDevice.gatt.disconnect();
-                updateBleStatus("Disconnecting...", 'text-yellow-300', false);
-                bleConnectButton.disabled = true;
+            if (!('bluetooth' in navigator)) {
+                alert("Web Bluetooth API is not supported by your browser or device.");
                 return;
             }
-
-            if (!navigator.bluetooth) {
-                updateBleStatus("Error - Web Bluetooth not supported by browser.", 'text-red-300', false);
-                return;
-            }
-
+            
             bleConnectButton.disabled = true;
-            updateBleStatus("Scanning...", 'text-yellow-300', false);
 
             try {
-                // This request allows the user to select ANY nearby device, 
-                // removing the strict service filter that was causing issues on your phone.
+                if (bleDevice && bleDevice.gatt.connected) {
+                    // Handle Disconnect action
+                    bleDevice.gatt.disconnect();
+                    return;
+                }
+                
+                updateConnectionStatus("Scanning...", 'text-yellow-300', false);
+
+                // Request the device using the service UUID filter
                 bleDevice = await navigator.bluetooth.requestDevice({
-                    acceptAllDevices: true,
-                    optionalServices: [SERVICE_UUID] 
+                    filters: [{
+                        services: [BLE_SERVICE_UUID]
+                    }],
+                    optionalServices: [BLE_SERVICE_UUID] 
                 });
 
+                updateConnectionStatus(`Connecting to ${bleDevice.name}...`, 'text-yellow-300', false);
+
+                // Add disconnect listener
                 bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
-                updateBleStatus(`Connecting to ${bleDevice.name || 'Unknown Device'}...`, 'text-yellow-300', false);
 
-                const server = await bleDevice.gatt.connect();
-                // We use the correct Service UUID (now updated in const) to find the service.
-                const service = await server.getPrimaryService(SERVICE_UUID);
-                // We use the correct Characteristic UUID (now updated in const) to find the characteristic.
-                bleCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+                // Connect to the GATT server
+                bleServer = await bleDevice.gatt.connect();
 
-                updateBleStatus("Connected!", 'text-green-300', true);
-                console.log("Successfully connected to GATT server.");
+                // Get the service
+                bleService = await bleServer.getPrimaryService(BLE_SERVICE_UUID);
 
-            } catch (error) {
-                bleCharacteristic = null;
-                bleDevice = null;
-                updateBleStatus(`Disconnected/Error (${error.name})`, 'text-red-300', false);
-                console.error("BLE Connection Error:", error);
+                // Get the characteristic
+                bleCharacteristic = await bleService.getCharacteristic(BLE_CHARACTERISTIC_UUID);
+
+                updateConnectionStatus("Connected!", 'text-green-300', true);
+                console.log("BLE connection successful. Characteristic ready.");
+
+                // Immediately send the current data string upon successful connection
+                if (lastWeatherData) {
+                    const dataString = generateDataString(lastWeatherData.current);
+                    sendBleData(dataString);
+                }
                 
-                // If the error is specific to the service UUID, display a helpful message
-                if (error.name === 'NotFoundError') {
-                    console.error("The Service or Characteristic UUID likely doesn't match the ESP32 firmware.");
+            } catch (error) {
+                bleDevice = null;
+                bleServer = null;
+                bleService = null;
+                bleCharacteristic = null;
+                
+                let message = "Connection failed.";
+                if (error.name === "NotFoundError") {
+                    message = "Device not found. Is your ESP32 advertising?";
+                } else if (error.name === "NotAllowedError") {
+                    message = "Permissions denied. Check Bluetooth/Location status.";
+                } else if (error.name === "NetworkError") {
+                    message = "Network error during connection. Try resetting phone/ESP32.";
+                } else {
+                    message = error.message.substring(0, 50) + "...";
                 }
 
+                updateConnectionStatus(message, 'text-red-300', false);
+                console.error("BLE Connection Error:", error);
             } finally {
-                if (!bleDevice || !bleDevice.gatt.connected) {
-                    bleConnectButton.disabled = false;
-                }
+                bleConnectButton.disabled = false;
             }
         }
         
@@ -467,8 +470,8 @@
             // 1. Initial weather fetch
             fetchWeather(1, false); 
             
-            // 2. Set 5-second timer for time update/BLE string update
-            setInterval(updateTimeAndBleString, TIME_REFRESH_INTERVAL); 
+            // 2. Set 5-second timer for time update/data string update and AUTO-SEND
+            setInterval(updateTimeAndDataString, TIME_REFRESH_INTERVAL); 
             
             // 3. Set 2-minute timer for weather fetch
             fetchIntervalId = setInterval(() => fetchWeather(1, false), WEATHER_REFRESH_INTERVAL); 
@@ -480,14 +483,14 @@
                 
                 clearInterval(fetchIntervalId); 
                 fetchWeather(1, true); 
+                // Re-establish auto-fetch interval
                 fetchIntervalId = setInterval(() => fetchWeather(1, false), WEATHER_REFRESH_INTERVAL); 
             });
 
             // 5. Attach BLE connect/disconnect button listener
             bleConnectButton.addEventListener('click', connectBle);
 
-            // 6. Attach BLE send data button listener
-            sendBleDataButton.addEventListener('click', sendBleData);
+            // Removed: Listener for sendBleDataButton
         }
 
         // Initialize the app on load
@@ -496,5 +499,3 @@
 
 </body>
 </html>
- 
- 
