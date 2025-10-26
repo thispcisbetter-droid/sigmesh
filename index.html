@@ -1,217 +1,355 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-<meta charset="utf-8" />
-<title>Weather & Time BLE → ESP32</title>
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<style>
-  body{ font-family:'Segoe UI',sans-serif; max-width:760px; margin:24px auto; padding:16px; background:#f5f5f7; color:#222; }
-  h2{text-align:center; color:#333;}
-  .card{ background:#fff; border-radius:12px; box-shadow:0 4px 10px rgba(0,0,0,0.1); padding:16px; margin-top:16px; display:flex; justify-content:space-between; align-items:center; font-weight:600; font-size:1.2em; }
-  .card span{ flex:1; text-align:center; font-size:1.3em; font-weight:bold; }
-  input,button{ padding:8px 12px; border-radius:8px; border:1px solid #ccc; font-size:1em; }
-  button{ cursor:pointer; background:#007bff; color:#fff; border:none; transition:0.2s; }
-  button:hover{ background:#0056b3; }
-  .row{ display:flex; gap:8px; margin-top:8px; align-items:center; flex-wrap:wrap; }
-  #log{ white-space:pre-wrap; background:#eef1f5; padding:12px; border-radius:8px; margin-top:12px; height:260px; overflow:auto; font-size:0.9em; }
-  .status{ margin-top:8px; font-weight:600; color:#007bff; }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hyderabad Weather Forecast</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Custom Font: Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            transition: background-color 0.5s ease;
+        }
+        /* Custom gradient for a pleasant look */
+        .weather-card-bg {
+            background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.08);
+            transition: all 0.5s ease;
+        }
+    </style>
 </head>
-<body>
+<body class="flex items-center justify-center min-h-screen p-4">
 
-<h2>Weather & Time BLE → ESP32</h2>
+    <!-- Main Weather Card Container -->
+    <div id="weatherCard" class="weather-card-bg w-full max-w-sm mx-auto rounded-3xl p-8 text-white transform hover:scale-[1.02] transition duration-300">
 
-<div style="margin-top:8px">
-  <label>City:</label>
-  <input id="city" value="Hyderabad" />
-</div>
+        <!-- Header and City -->
+        <header class="mb-6">
+            <h1 class="text-3xl font-extrabold text-center" id="cityDisplay">Fetching Weather...</h1>
+            <p class="text-sm font-light text-center opacity-75" id="dateDisplay"></p>
+        </header>
 
-<div class="row">
-  <button id="connectBtn">Connect BLE</button>
-  <button id="disconnectBtn">Disconnect</button>
-  <button id="sendNowBtn">Send Weather Now</button>
-  <button id="sendTimeNowBtn">Send Time Now</button>
-</div>
+        <!-- Loading State / Error State -->
+        <div id="loadingState" class="text-center py-10">
+            <svg class="animate-spin h-8 w-8 text-white mx-auto mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p class="text-lg">One moment, please...</p>
+        </div>
 
-<div class="status" id="status">Status: Disconnected</div>
+        <!-- Weather Data Display (Hidden initially) -->
+        <div id="weatherData" class="hidden text-center">
+            
+            <!-- Temperature and Icon -->
+            <div class="flex flex-col items-center justify-center my-6">
+                <img id="weatherIcon" src="" alt="Weather Icon" class="w-20 h-20 mb-2">
+                <span class="text-7xl font-light" id="temperatureDisplay">--</span>
+                <span class="text-xl font-medium opacity-80" id="conditionDisplay"></span>
+            </div>
 
-<div class="card">
-  <span id="timeDisplay">--:--</span>
-  <span id="condDisplay">N/A</span>
-  <span id="tempDisplay">--°C</span>
-</div>
+            <!-- Details: Wind and Humidity -->
+            <div class="bg-white bg-opacity-10 p-4 rounded-xl flex justify-around mt-8 shadow-inner">
+                <div class="flex flex-col items-center">
+                    <span class="text-2xl font-bold" id="windSpeed">--</span>
+                    <span class="text-xs opacity-75">Wind (km/h)</span>
+                </div>
+                <div class="flex flex-col items-center">
+                    <span class="text-2xl font-bold" id="humidity">--</span>
+                    <span class="text-xs opacity-75">Humidity (%)</span>
+                </div>
+            </div>
 
-<div id="log"></div>
+            <!-- BLE Output Section -->
+            <div class="mt-8 pt-4 border-t border-white border-opacity-20">
+                <h3 class="text-sm font-semibold opacity-80 mb-2">ESP32 BLE Data Format (Copy & Send)</h3>
+                <code id="bleOutput" class="block w-full text-xs text-left bg-white bg-opacity-10 p-2 rounded-lg break-all">
+                    Loading...
+                </code>
+                <button id="copyBleData" class="mt-2 w-full bg-white text-blue-800 font-bold py-2 rounded-xl hover:bg-gray-100 transition duration-150 shadow-md">
+                    Copy BLE String
+                </button>
+                <p id="copyStatus" class="text-xs text-center mt-1 opacity-75 hidden">Copied!</p>
+            </div>
+            
+            <!-- Fetch Button and Status -->
+            <button id="manualFetchButton" class="mt-4 w-full bg-blue-500 text-white font-bold py-2 rounded-xl hover:bg-blue-600 transition duration-150 shadow-md">
+                Manually Update Weather
+            </button>
+            <p id="fetchStatus" class="text-xs text-center mt-1 text-green-300 hidden">Last fetch: --</p>
 
-<script>
-const WEATHERAPI_KEY = 'f433f239860742c1b8e134145252510';
-const CITY_DEFAULT = 'Hyderabad';
-const TIME_INTERVAL_MS = 5000;      // send time every 5s
-const WEATHER_INTERVAL_MS = 120000; // send weather every 2min
+        </div>
 
-const SERVICE_UUID = '9a1b2c3d-4e5f-6a70-8b9c-0d1e2f3a4b5c';
-const CHAR_UUID    = '1a2b3c4d-5e6f-7a80-9b0c-1d2e3f4a5b6c';
+        <!-- Footer for Last Updated Time -->
+        <footer class="mt-8 text-center text-xs opacity-60">
+            <p id="lastUpdated">Last updated: --</p>
+        </footer>
 
-let bleDevice=null, bleServer=null, writeChar=null;
-let lastWeather={ time: '--:--', cond: 'N/A', temp: '--°C' };
-let timeTimer=null, weatherTimer=null;
+    </div>
 
-const logEl = document.getElementById('log');
-const statusEl = document.getElementById('status');
-const timeEl = document.getElementById('timeDisplay');
-const condEl = document.getElementById('condDisplay');
-const tempEl = document.getElementById('tempDisplay');
+    <script>
+        // --- Configuration ---
+        const API_KEY = "f433f239860742c1b8e134145252510";
+        const CITY = "Hyderabad";
+        const API_URL = `https://api.weatherapi.com/v1/current.json?key=${API_KEY}&q=${CITY}`;
+        const WEATHER_REFRESH_INTERVAL = 120000; // 2 minutes in ms
+        const TIME_REFRESH_INTERVAL = 5000; // 5 seconds in ms
+        const MAX_ATTEMPTS = 3;
+        
+        // --- Global State ---
+        let lastWeatherData = null; // Stores the last successful API data
+        let fetchIntervalId = null; // ID for the 2-minute weather timer
 
-function log(txt){
-  const ts = new Date().toLocaleTimeString();
-  const line = `${ts} — ${txt}`;
-  console.log(line);
-  logEl.textContent += line+"\n";
-  logEl.scrollTop = logEl.scrollHeight;
-}
+        // --- DOM Elements ---
+        const weatherCard = document.getElementById('weatherCard');
+        const loadingState = document.getElementById('loadingState');
+        const weatherData = document.getElementById('weatherData');
+        const cityDisplay = document.getElementById('cityDisplay');
+        const dateDisplay = document.getElementById('dateDisplay');
+        const temperatureDisplay = document.getElementById('temperatureDisplay');
+        const conditionDisplay = document.getElementById('conditionDisplay');
+        const weatherIcon = document.getElementById('weatherIcon');
+        const windSpeed = document.getElementById('windSpeed');
+        const humidity = document.getElementById('humidity');
+        const lastUpdated = document.getElementById('lastUpdated');
+        const bleOutput = document.getElementById('bleOutput');
+        const copyBleDataButton = document.getElementById('copyBleData');
+        const copyStatus = document.getElementById('copyStatus');
+        const manualFetchButton = document.getElementById('manualFetchButton');
+        const fetchStatus = document.getElementById('fetchStatus');
 
-function setStatus(s){ statusEl.textContent = 'Status: '+s; }
 
-// replace any "mist" with "Partly cloudy"
-function sanitizeCondition(cond){
-  if(!cond) return cond;
-  return cond.replace(/mist/gi,'Partly cloudy');
-}
+        // --- Helper Functions ---
 
-// build key=value string to send over BLE
-function buildKV(payload){
-  const safeCond = String(payload.cond).replace(/;/g,',').replace(/\n/g,' ');
-  return `time=${payload.time};cond=${safeCond};temp=${payload.temp}`;
-}
+        /**
+         * Formats the local time for the main UI display (e.g., 3:45 PM).
+         */
+        function formatTimeUi(date) {
+            const options = { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true };
+            return date.toLocaleTimeString('en-US', options);
+        }
 
-// update display cards
-function updateDisplay(payload){
-  if(payload.time) timeEl.textContent = payload.time;
-  if(payload.cond) condEl.textContent = payload.cond;
-  if(payload.temp) tempEl.textContent = payload.temp;
-}
+        /**
+         * Formats the time specifically for the ESP32 BLE string (HH:MM 24-hour format).
+         * Uses the current browser time for up-to-the-second accuracy.
+         * @returns {string} Time in HH:MM format.
+         */
+        function formatTimeBle() {
+            const date = new Date();
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            return `${hours}:${minutes}`;
+        }
+        
+        /**
+         * Generates the string for the ESP32 BLE receiver.
+         * Format: time=HH:MM;cond=Condition;temp=XXC
+         */
+        function generateBleString(current) {
+            let condition = current.condition.text;
+            
+            // Apply the user's specific replacement: "mist" -> "Partly cloudy"
+            if (condition.toLowerCase() === 'mist') {
+                condition = 'Partly cloudy';
+            }
 
-// ===== BLE functions =====
-async function connectBLE(){
-  try{
-    log('Requesting BLE device...');
-    bleDevice = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,              // mobile-friendly
-      optionalServices: [SERVICE_UUID]     // allow access to custom service
-    });
-    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+            const time = formatTimeBle(); // Use current browser time
+            const temp = Math.round(current.temp_c);
+            
+            return `time=${time};cond=${condition};temp=${temp}°C`;
+        }
+        
+        /**
+         * Updates the UI elements that rely on the current time (runs every 5s).
+         */
+        function updateTimeAndBleString() {
+            if (!lastWeatherData) return;
+            
+            const localTime = new Date(); 
+            
+            // 1. Update main date display (including seconds)
+            dateDisplay.textContent = localTime.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) + 
+                                      ' | ' + formatTimeUi(localTime);
 
-    log('Connecting to GATT server...');
-    bleServer = await bleDevice.gatt.connect();
+            // 2. Regenerate BLE string using the last known weather condition/temp and the current time
+            const bleString = generateBleString(lastWeatherData.current);
+            bleOutput.textContent = bleString;
+        }
 
-    const service = await bleServer.getPrimaryService(SERVICE_UUID);
-    writeChar = await service.getCharacteristic(CHAR_UUID);
+        /**
+         * Updates the UI after a successful API fetch.
+         * @param {object} data The weather data object.
+         */
+        function updateUI(data) {
+            const current = data.current;
+            const location = data.location;
+            
+            lastWeatherData = data; // Store the successful data
 
-    log('BLE connected! Device: ' + (bleDevice.name || 'unnamed'));
-    setStatus('Connected');
+            // Update Header (City is static, time handled by updateTimeAndBleString)
+            cityDisplay.textContent = location.name;
 
-    startTimers();
-  } catch(err){
-    log('BLE Connect Error: ' + err);
-    setStatus('Disconnected');
-  }
-}
+            // Update Main Data
+            temperatureDisplay.innerHTML = `${Math.round(current.temp_c)}&deg;C`;
+            
+            let conditionText = current.condition.text;
+            if (conditionText.toLowerCase() === 'mist') {
+                conditionText = 'Partly cloudy';
+            }
+            conditionDisplay.textContent = conditionText;
+            
+            // Set Icon
+            weatherIcon.src = `https:${current.condition.icon}`;
+            weatherIcon.alt = current.condition.text;
 
-function onDisconnected(){
-  log('BLE disconnected');
-  setStatus('Disconnected');
-  writeChar=null;
-}
+            // Update Details
+            windSpeed.textContent = current.wind_kph;
+            humidity.textContent = current.humidity;
 
-async function disconnectBLE(){
-  stopTimers();
-  if(bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect();
-  writeChar=null;
-  setStatus('Disconnected');
-}
+            // Update Footer (last updated time from the API source)
+            lastUpdated.textContent = `API data updated: ${formatTimeUi(new Date(current.last_updated.replace(' ', 'T')))}`;
+            
+            // Initial call to set the accurate time and BLE string
+            updateTimeAndBleString(); 
 
-async function tryReconnectIfPossible(){
-  try{
-    if(bleDevice && !bleDevice.gatt.connected){
-      await bleDevice.gatt.connect();
-      const service = await bleServer.getPrimaryService(SERVICE_UUID);
-      writeChar = await service.getCharacteristic(CHAR_UUID);
-      setStatus('Reconnected: '+(bleDevice.name||'unnamed'));
-      log('Reconnected BLE.');
-      return true;
-    }
-  }catch(e){ log('Reconnect failed: '+e);}
-  return false;
-}
+            // Show data and hide loader
+            loadingState.classList.add('hidden');
+            weatherData.classList.remove('hidden');
 
-async function writeString(str){
-  if(!writeChar){
-    const re = await tryReconnectIfPossible();
-    if(!re){ log('Cannot send: Not connected.'); return; }
-  }
-  const encoder = new TextEncoder();
-  await writeChar.writeValue(encoder.encode(str));
-  log('Sent: '+str);
-}
+            // Change background color based on day/night
+            const nightBg = 'linear-gradient(135deg, #0f172a 0%, #1e40af 100%)';
+            const dayBg = 'linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%)';
+            const bodyNightBg = '#1f2937';
+            const bodyDayBg = '#f3f4f6';
+            
+            weatherCard.style.background = current.is_day === 0 ? nightBg : dayBg;
+            document.body.style.backgroundColor = current.is_day === 0 ? bodyNightBg : bodyDayBg;
+        }
 
-// ===== Weather =====
-async function fetchWeather(city){
-  const url = `https://api.weatherapi.com/v1/current.json?key=${WEATHERAPI_KEY}&q=${city}&aqi=no`;
-  log('Fetching weather...');
-  const resp = await fetch(url);
-  if(!resp.ok) throw new Error('Weather API error');
-  const data = await resp.json();
+        /**
+         * Updates the status message below the manual fetch button.
+         */
+        function updateFetchStatus(success, isManual) {
+            const now = new Date();
+            const time = formatTimeUi(now);
+            
+            fetchStatus.classList.remove('hidden', 'text-red-300', 'text-green-300');
+            
+            if (success) {
+                fetchStatus.textContent = `Last weather fetch: ${time} (${isManual ? 'Manual' : 'Auto'})`;
+                fetchStatus.classList.add('text-green-300');
+            } else {
+                fetchStatus.textContent = `Fetch FAILED at: ${time}`;
+                fetchStatus.classList.add('text-red-300');
+            }
+        }
 
-  let hhmm='--:--';
-  if(data.location && data.location.localtime){
-    hhmm = String(data.location.localtime).split(' ')[1].substring(0,5);
-  } else {
-    const dt = new Date();
-    hhmm = dt.getHours().toString().padStart(2,'0')+':'+dt.getMinutes().toString().padStart(2,'0');
-  }
+        /**
+         * Fetches weather data with basic exponential backoff for retries.
+         */
+        async function fetchWeather(attempt = 1, isManual = false) {
+            
+            // Only show loader if it's the first attempt and data hasn't been loaded yet
+            if (attempt === 1 && !lastWeatherData) {
+                loadingState.classList.remove('hidden');
+                weatherData.classList.add('hidden');
+            }
+            
+            try {
+                const response = await fetch(API_URL);
 
-  let cond=(data.current && data.current.condition && data.current.condition.text)?data.current.condition.text:'Unknown';
-  cond = sanitizeCondition(cond);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
 
-  const temp=(data.current && ('temp_c' in data.current))?Math.round(data.current.temp_c)+'°C':'N/A';
-  return {time:hhmm,cond,temp};
-}
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error.message);
+                }
+                
+                updateUI(data);
+                updateFetchStatus(true, isManual);
+                
+                // Re-enable the manual button after success
+                manualFetchButton.disabled = false;
+                manualFetchButton.textContent = 'Manually Update Weather';
 
-async function fetchAndSendWeather(){
-  try{
-    const city = document.getElementById('city').value.trim()||CITY_DEFAULT;
-    const w = await fetchWeather(city);
-    lastWeather=w;
-    updateDisplay(w);
-    await writeString(buildKV(w));
-  }catch(e){ log('Weather error: '+(e.message||e));}
-}
+            } catch (error) {
+                console.error(`Attempt ${attempt} failed:`, error.message);
+                
+                if (attempt < MAX_ATTEMPTS) {
+                    const delay = Math.pow(2, attempt) * 1000;
+                    setTimeout(() => fetchWeather(attempt + 1, isManual), delay);
+                } else {
+                    cityDisplay.textContent = "Data Unavailable";
+                    lastUpdated.textContent = "Could not load weather after multiple attempts.";
+                    // Only hide loading state if it was visible
+                    loadingState.classList.add('hidden');
+                    weatherData.classList.remove('hidden'); 
+                    bleOutput.textContent = "Error fetching data.";
+                    updateFetchStatus(false, isManual);
+                    
+                    // Re-enable the manual button after failure
+                    manualFetchButton.disabled = false;
+                    manualFetchButton.textContent = 'Manually Update Weather';
+                }
+            }
+        }
+        
+        /**
+         * Main function to set up timers and listeners.
+         */
+        function initializeApp() {
+            // 1. Initial weather fetch
+            fetchWeather(1, false); 
+            
+            // 2. Set 5-second timer for time update/BLE string update
+            setInterval(updateTimeAndBleString, TIME_REFRESH_INTERVAL); 
+            
+            // 3. Set 2-minute timer for weather fetch
+            fetchIntervalId = setInterval(() => fetchWeather(1, false), WEATHER_REFRESH_INTERVAL); 
 
-async function sendTimeUpdate(){
-  try{
-    const dt = new Date();
-    const hhmm = dt.getHours().toString().padStart(2,'0')+':'+dt.getMinutes().toString().padStart(2,'0');
-    const payload = {time:hhmm,cond:lastWeather.cond,temp:lastWeather.temp};
-    updateDisplay(payload);
-    await writeString(buildKV(payload));
-  }catch(e){ log('Time update error: '+(e.message||e));}
-}
+            // 4. Attach manual button listener
+            manualFetchButton.addEventListener('click', () => {
+                // Disable button and show loading text
+                manualFetchButton.disabled = true;
+                manualFetchButton.textContent = 'Updating...';
+                
+                // Clear the existing interval so the 2-minute clock resets
+                clearInterval(fetchIntervalId); 
+                fetchWeather(1, true); // Perform manual fetch (isManual = true)
+                // Restart the 2-minute interval after the fetch starts
+                fetchIntervalId = setInterval(() => fetchWeather(1, false), WEATHER_REFRESH_INTERVAL); 
+            });
 
-// ===== Timers =====
-function startTimers(){
-  if(!timeTimer) timeTimer=setInterval(sendTimeUpdate,TIME_INTERVAL_MS);
-  if(!weatherTimer){ fetchAndSendWeather(); weatherTimer=setInterval(fetchAndSendWeather,WEATHER_INTERVAL_MS);}
-}
-function stopTimers(){ if(timeTimer){clearInterval(timeTimer);timeTimer=null;} if(weatherTimer){clearInterval(weatherTimer);weatherTimer=null;} }
+            // 5. Add event listener for the copy button
+            copyBleDataButton.addEventListener('click', () => {
+                const textToCopy = bleOutput.textContent;
+                
+                // Copy using document.execCommand('copy') for better compatibility
+                const tempInput = document.createElement('textarea');
+                tempInput.value = textToCopy;
+                document.body.appendChild(tempInput);
+                tempInput.select();
+                document.execCommand('copy');
+                document.body.removeChild(tempInput);
 
-// ===== UI =====
-document.getElementById('connectBtn').addEventListener('click',connectBLE);
-document.getElementById('disconnectBtn').addEventListener('click',disconnectBLE);
-document.getElementById('sendNowBtn').addEventListener('click',fetchAndSendWeather);
-document.getElementById('sendTimeNowBtn').addEventListener('click',sendTimeUpdate);
+                // Show copy status
+                copyStatus.classList.remove('hidden');
+                setTimeout(() => {
+                    copyStatus.classList.add('hidden');
+                }, 2000);
+            });
+        }
 
-window.addEventListener('beforeunload',()=>{try{if(bleDevice&&bleDevice.gatt.connected)bleDevice.gatt.disconnect();}catch(e){}});
-</script>
+        // Initialize the app on load
+        window.onload = initializeApp;
+    </script>
 
 </body>
 </html>
