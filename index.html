@@ -1,0 +1,265 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Auto Weather/Time → sigmesh watch (BLE)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 760px;
+      margin: 24px auto;
+      padding: 16px;
+      background: #f5f5f7;
+      color: #222;
+    }
+    h2 {text-align:center; color:#333;}
+    .card{
+      background:#fff;
+      border-radius:12px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+      padding:16px;
+      margin-top:16px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      font-weight:600;
+      font-size:1.2em;
+    }
+    .card span{
+      flex:1;
+      text-align:center;
+      font-size:1.3em;
+      font-weight:bold;
+    }
+    input, button{
+      padding:8px 12px;
+      border-radius:8px;
+      border:1px solid #ccc;
+      font-size:1em;
+    }
+    button{
+      cursor:pointer;
+      background:#007bff;
+      color:#fff;
+      border:none;
+      transition:0.2s;
+    }
+    button:hover{background:#0056b3;}
+    .row{display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;}
+    #log{
+      white-space:pre-wrap;
+      background:#eef1f5;
+      padding:12px;
+      border-radius:8px;
+      margin-top:12px;
+      height:260px;
+      overflow:auto;
+      font-size:0.9em;
+    }
+    .status{
+      margin-top:8px;
+      font-weight:600;
+      color:#007bff;
+    }
+  </style>
+</head>
+<body>
+  <h2>Auto Weather & Time → sigmesh watch (BLE)</h2>
+
+  <div style="margin-top:8px">
+    <label>City:</label>
+    <input id="city" value="Hyderabad" />
+  </div>
+
+  <div class="row">
+    <button id="connectBtn">Connect BLE</button>
+    <button id="disconnectBtn">Disconnect</button>
+    <button id="sendNowBtn">Send Weather Now</button>
+    <button id="sendTimeNowBtn">Send Time Now</button>
+  </div>
+
+  <div class="status" id="status">Status: Disconnected</div>
+
+  <!-- Display cards -->
+  <div class="card">
+    <span id="timeDisplay">--:--</span>
+    <span id="condDisplay">N/A</span>
+    <span id="tempDisplay">--°C</span>
+  </div>
+
+  <div id="log"></div>
+
+<script>
+const WEATHERAPI_KEY = 'f433f239860742c1b8e134145252510';
+const CITY_DEFAULT = 'Hyderabad';
+const TIME_INTERVAL_MS = 5000;      // send time every 5s
+const WEATHER_INTERVAL_MS = 120000; // weather every 2min
+
+let bleDevice = null;
+let bleServer = null;
+let writeChar = null;
+let lastWeather = { time: '--:--', cond: 'N/A', temp: '--°C' };
+let timeTimer = null;
+let weatherTimer = null;
+
+const logEl = document.getElementById('log');
+const statusEl = document.getElementById('status');
+const timeEl = document.getElementById('timeDisplay');
+const condEl = document.getElementById('condDisplay');
+const tempEl = document.getElementById('tempDisplay');
+
+function log(txt){
+  const ts = new Date().toLocaleTimeString();
+  const line = `${ts} — ${txt}`;
+  console.log(line);
+  logEl.textContent += line + "\n";
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(s){
+  statusEl.textContent = 'Status: '+s;
+}
+
+// sanitize condition: replace any occurrence of "mist" with "Partly cloudy"
+function sanitizeCondition(cond){
+  if(!cond) return cond;
+  return cond.replace(/mist/gi,'Partly cloudy');
+}
+
+function buildKV(payload){
+  const safeCond = String(payload.cond).replace(/;/g,',').replace(/\n/g,' ');
+  return `time=${payload.time};cond=${safeCond};temp=${payload.temp}`;
+}
+
+// update display cards
+function updateDisplay(payload){
+  if(payload.time) timeEl.textContent = payload.time;
+  if(payload.cond) condEl.textContent = payload.cond;
+  if(payload.temp) tempEl.textContent = payload.temp;
+}
+
+// BLE functions
+async function connectBLE(){
+  try{
+    const serviceUuid = '9a1b2c3d-4e5f-6a70-8b9c-0d1e2f3a4b5c';
+    const charUuid = '1a2b3c4d-5e6f-7a80-9b0c-1d2e3f4a5b6c';
+    log('Requesting BLE device...');
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters:[{services:[serviceUuid]}],
+      optionalServices:[serviceUuid]
+    });
+    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+    await connectGATT(serviceUuid,charUuid);
+    startTimers();
+    setStatus('Connected: '+(bleDevice.name||'unnamed'));
+  }catch(err){
+    log('BLE Connect Error: '+(err.message||err));
+    setStatus('Disconnected');
+  }
+}
+
+async function connectGATT(serviceUuid,charUuid){
+  bleServer = await bleDevice.gatt.connect();
+  const service = await bleServer.getPrimaryService(serviceUuid);
+  writeChar = await service.getCharacteristic(charUuid);
+  log('BLE characteristic obtained.');
+}
+
+function onDisconnected(){
+  log('BLE disconnected');
+  setStatus('Disconnected');
+  writeChar = null;
+}
+
+async function disconnectBLE(){
+  stopTimers();
+  if(bleDevice && bleDevice.gatt.connected){
+    bleDevice.gatt.disconnect();
+  }
+  writeChar = null;
+  setStatus('Disconnected');
+}
+
+async function tryReconnectIfPossible(){
+  try{
+    if(bleDevice && !bleDevice.gatt.connected){
+      await bleDevice.gatt.connect();
+      const service = await bleDevice.gatt.getPrimaryService('9a1b2c3d-4e5f-6a70-8b9c-0d1e2f3a4b5c');
+      writeChar = await service.getCharacteristic('1a2b3c4d-5e6f-7a80-9b0c-1d2e3f4a5b6c');
+      setStatus('Reconnected: '+(bleDevice.name||'unnamed'));
+      log('Reconnected BLE.');
+      return true;
+    }
+  }catch(e){log('Reconnect failed: '+e);}
+  return false;
+}
+
+async function writeString(str){
+  if(!writeChar){
+    const re = await tryReconnectIfPossible();
+    if(!re){ log('Cannot send: Not connected.'); return; }
+  }
+  const encoder = new TextEncoder();
+  await writeChar.writeValue(encoder.encode(str));
+  log('Sent: '+str);
+}
+
+// Weather
+async function fetchWeather(city){
+  const url = `https://api.weatherapi.com/v1/current.json?key=${WEATHERAPI_KEY}&q=${city}&aqi=no`;
+  log('Fetching weather...');
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error('Weather API error');
+  const data = await resp.json();
+  let hhmm='--:--';
+  if(data.location && data.location.localtime){
+    hhmm=String(data.location.localtime).split(' ')[1].substring(0,5);
+  }else{
+    const dt = new Date();
+    hhmm = dt.getHours().toString().padStart(2,'0')+':'+dt.getMinutes().toString().padStart(2,'0');
+  }
+  let cond=(data.current && data.current.condition && data.current.condition.text)?data.current.condition.text:'Unknown';
+  cond = sanitizeCondition(cond);
+  const temp=(data.current && ('temp_c' in data.current))?Math.round(data.current.temp_c)+'°C':'N/A';
+  return {time:hhmm,cond,temp};
+}
+
+async function fetchAndSendWeather(){
+  try{
+    const city = document.getElementById('city').value.trim()||CITY_DEFAULT;
+    const w = await fetchWeather(city);
+    lastWeather=w;
+    updateDisplay(w);
+    await writeString(buildKV(w));
+  }catch(e){log('Weather error: '+(e.message||e));}
+}
+
+async function sendTimeUpdate(){
+  try{
+    const dt = new Date();
+    const hhmm = dt.getHours().toString().padStart(2,'0')+':'+dt.getMinutes().toString().padStart(2,'0');
+    const payload = {time:hhmm,cond:lastWeather.cond,temp:lastWeather.temp};
+    updateDisplay(payload);
+    await writeString(buildKV(payload));
+  }catch(e){log('Time update error: '+(e.message||e));}
+}
+
+// timers
+function startTimers(){
+  if(!timeTimer){timeTimer=setInterval(sendTimeUpdate,TIME_INTERVAL_MS);}
+  if(!weatherTimer){fetchAndSendWeather(); weatherTimer=setInterval(fetchAndSendWeather,WEATHER_INTERVAL_MS);}
+}
+function stopTimers(){if(timeTimer){clearInterval(timeTimer);timeTimer=null;} if(weatherTimer){clearInterval(weatherTimer);weatherTimer=null;}}
+
+// UI
+document.getElementById('connectBtn').addEventListener('click',connectBLE);
+document.getElementById('disconnectBtn').addEventListener('click',disconnectBLE);
+document.getElementById('sendNowBtn').addEventListener('click',fetchAndSendWeather);
+document.getElementById('sendTimeNowBtn').addEventListener('click',sendTimeUpdate);
+
+window.addEventListener('beforeunload',()=>{try{if(bleDevice&&bleDevice.gatt.connected)bleDevice.gatt.disconnect();}catch(e){}});
+log('Page ready. Press Connect BLE to start automatic updates.');
+</script>
+</body>
+</html>
